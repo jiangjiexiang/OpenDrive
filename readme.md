@@ -46,8 +46,7 @@ python opendrive_parser.py map/test.xodr --list-junctions
 ```
 
 - 导出可视化 HTML（生成 `out.html`）并在 Windows 上直接打开：
-```
-python opendrive_parser.py map/test.xodr --visualize out.html
+
 ```
 如果不提供输出文件名，默认会写 `visualization.html`。
 
