@@ -1005,8 +1005,9 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
             wl = wr = 2.5
         left_pts, right_pts = compute_offsets(poly, wl, wr)
 
-        # determine colors
-        fill, stroke = _color_for_road(rid)
+        # determine colors - revert to original light-blue for all roads
+        fill = "#e8f7ff"
+        stroke = "#2f7fc1"
         stroke_width_poly = 0.8
         if rid in road_junctions:
             stroke_width_poly = 1.6
@@ -1229,16 +1230,16 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
                     p2_map = (pos[0] + half_vec[0], pos[1] + half_vec[1])
                     p1_px = transform(p1_map)
                     p2_px = transform(p2_map)
-                    # line style based on elem_tag / object type
-                    line_color = "#2b9df4"
+                    # line style based on elem_tag / object type — 默认黑色（用户要求）
+                    line_color = "#000000"
                     stroke_w = max(1.0, min(3.0, r_px / 2.0))
                     try:
                         if elem_tag:
-                            # try to pick a color variant for certain tags
+                            # 尽量为特殊标记选择颜色变体（但默认保持黑色）
                             if "stop" in elem_tag:
                                 line_color = "#d94d4d"
                             elif "cross" in elem_tag or "zebra" in elem_tag:
-                                line_color = "#222"
+                                line_color = "#000000"
                     except Exception:
                         pass
                     svg_objects.append(f'<g class="xodr-object-group" data-road-id="{road_id}" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-elem-tag="{elem_tag_raw}" data-raw="{_obj_attr}">')
@@ -1727,9 +1728,8 @@ def main(argv=None):
             roads_geoms = extract_road_geometries(args.xodr, getattr(args, "resample_road", None))
             root = _load_root(args.xodr)
             objects_map = extract_objects_from_root(root)
-            # 现在计算 junction 标注并将其用于渲染
-            junctions = _junction_marker_positions(root, roads_geoms)
-            write_visualization_html(out_path, roads_geoms, junctions, objects_map)
+            # 不计算 junction 标注，也不用于渲染 — 传入空字典
+            write_visualization_html(out_path, roads_geoms, {}, objects_map)
             abs_path = os.path.abspath(out_path)
             print(f"已生成可视化文件: {abs_path}")
         except Exception as e:
