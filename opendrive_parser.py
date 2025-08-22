@@ -104,6 +104,7 @@ def _get_child_by_tag(parent: ET.Element, tag: str) -> Optional[ET.Element]:
             return c
     return None
 
+
 def _compute_road_widths(road_elem: ET.Element) -> Tuple[float, float]:
     """
     Compute approximate left and right road widths (meters) from the first laneSection.
@@ -150,7 +151,7 @@ def _compute_road_widths(road_elem: ET.Element) -> Tuple[float, float]:
     return left_total, right_total
 
 
-def extract_road_geometries(xodr_path: str) -> Dict[str, Dict]:
+def extract_road_geometries(xodr_path: str, force_high_res_road: Optional[str] = None) -> Dict[str, Dict]:
     """
     Extract approximate centerline polylines for each road.
 
@@ -198,8 +199,24 @@ def extract_road_geometries(xodr_path: str) -> Dict[str, Dict]:
                 gchild = c
                 break
 
-            # choose sampling resolution: ~1m or at most 200 samples
-            samples = max(2, min(int(math.ceil(length / 1.0)) + 1, 200))
+            # choose sampling resolution: base ~1m; increase for curved geometries to smooth arcs
+            base_samples = int(math.ceil(length / 1.0)) + 1
+            samples = max(2, min(base_samples, 200))
+            # allow forcing very high resolution for a specific road (debug/fix)
+            if force_high_res_road is not None and rid == force_high_res_road:
+                # use a fine step (0.1m) but cap samples to avoid runaway memory/cpu
+                samples = max(samples, min(int(math.ceil(length / 0.1)) + 1, 5000))
+            # if geometry is an arc, increase sampling density based on curvature
+            if gchild is not None and _strip_ns(gchild.tag) == "arc":
+                try:
+                    k_tmp = float(gchild.attrib.get("curvature", "0"))
+                except Exception:
+                    k_tmp = 0.0
+                if abs(k_tmp) > 1e-6:
+                    # smaller step for higher curvature; clamp samples to a reasonable maximum
+                    # step is in meters: higher curvature -> smaller step -> more samples
+                    step = max(0.2, min(1.0, 0.5 / (abs(k_tmp) * 2.0)))
+                    samples = max(samples, min(int(math.ceil(length / step)) + 1, 2000))
 
             if gchild is None:
                 # no explicit type, treat as line
@@ -302,10 +319,12 @@ def _junction_marker_positions(root: ET.Element, roads_geoms: Dict[str, Dict]) -
 
 def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], junction_markers: Dict[str, Tuple[float, float, str]]):
     """
-    Produce a standalone HTML file with an SVG showing road areas (polygons), centerlines and junction markers.
+    Produce a standalone, styled HTML file with an SVG showing road areas (polygons), centerlines and junction markers.
 
-    Uses per-road 'width_left' and 'width_right' (meters) when available to build a simple road polygon by
-    offsetting the centerline left/right. Falls back to default width when missing.
+    This implementation:
+    - Renders the SVG server-side (svg_polys / svg_centers / svg_marks)
+    - Injects a small JS helper to handle click highlighting and simple viewBox zoom
+    - Avoids embedding any Python f-string style templates; uses string concatenation
     """
     # collect all points
     all_x = []
@@ -314,7 +333,6 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
         for x, y in r.get("poly", []):
             all_x.append(x)
             all_y.append(y)
-        # if width fields included, they won't affect bounds directly
     for coord in junction_markers.values():
         if coord and len(coord) >= 2:
             all_x.append(coord[0])
@@ -330,9 +348,9 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
         maxx = maxy = 1.0
 
     # margins and size
-    width = 600
-    height = 600
-    margin = 20
+    width = 800
+    height = 700
+    margin = 30
     dx = maxx - minx
     dy = maxy - miny
     if dx == 0:
@@ -341,18 +359,22 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
         dy = 1.0
     scale = min((width - 2 * margin) / dx, (height - 2 * margin) / dy)
 
+    # center the map within the SVG so there's symmetric padding
+    map_w = dx * scale
+    map_h = dy * scale
+    offset_x = (width - map_w) / 2.0
+    offset_y = (height - map_h) / 2.0
+
     def transform(pt: Tuple[float, float]) -> Tuple[float, float]:
         x, y = pt
-        tx = (x - minx) * scale + margin
-        ty = height - margin - (y - miny) * scale  # flip Y for screen coords
+        tx = (x - minx) * scale + offset_x
+        # flip Y and account for offset_y
+        ty = height - offset_y - (y - miny) * scale
         return tx, ty
 
     def compute_offsets(poly: List[Tuple[float, float]], left_w: float, right_w: float):
         """
         Given a centerline poly (list of (x,y)), compute left and right offset point lists.
-        left_w/right_w are distances in meters to offset; function returns (left_pts, right_pts)
-        where left_pts corresponds to left side following the poly order, and right_pts corresponds
-        to right side following the poly order.
         """
         if not poly or len(poly) < 2:
             return [], []
@@ -363,16 +385,16 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
             x, y = poly[i]
             # estimate tangent using neighbors
             if i == 0:
-                x2, y2 = poly[i+1]
+                x2, y2 = poly[i + 1]
                 tx = x2 - x
                 ty = y2 - y
-            elif i == n-1:
-                x1, y1 = poly[i-1]
+            elif i == n - 1:
+                x1, y1 = poly[i - 1]
                 tx = x - x1
                 ty = y - y1
             else:
-                x1, y1 = poly[i-1]
-                x2, y2 = poly[i+1]
+                x1, y1 = poly[i - 1]
+                x2, y2 = poly[i + 1]
                 tx = x2 - x1
                 ty = y2 - y1
             # normalize tangent
@@ -394,12 +416,10 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
 
     svg_road_polygons = []
     svg_centerlines = []
-    # build mapping road_id -> list of junctions (from junction_markers if they include incoming road id)
     road_junctions: Dict[str, List[Dict[str, str]]] = {}
     for jid, coord in junction_markers.items():
         if not coord:
             continue
-        # coord may be (x,y,name) or (x,y,name,incoming)
         incoming = None
         jname = ""
         if len(coord) >= 4:
@@ -409,30 +429,24 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
             jname = coord[2] if coord[2] else ""
         if incoming:
             road_junctions.setdefault(incoming, []).append({"id": jid, "name": jname})
-    # draw roads as filled polygons using left/right widths
+
     for rid, rdata in roads_geoms.items():
         poly = rdata.get("poly", [])
         if not poly or len(poly) < 2:
             continue
         wl = float(rdata.get("width_left", 0.0) or 0.0)
         wr = float(rdata.get("width_right", 0.0) or 0.0)
-        # if widths are zero, use a reasonable fallback (half-width 2.5m on each side)
         if wl <= 0 and wr <= 0:
             wl = wr = 2.5
-        # compute offsets
         left_pts, right_pts = compute_offsets(poly, wl, wr)
         if left_pts and right_pts:
-            # build polygon: left side forward, right side reversed to close
             poly_screen = [transform(p) for p in left_pts] + [transform(p) for p in reversed(right_pts)]
             pts_str = " ".join(f"{round(px,2)},{round(py,2)}" for px, py in poly_screen)
             title = f"road {rid} {rdata.get('name','')}"
-            # lightly filled road with subtle stroke; include data attributes for interactivity
-            svg_road_polygons.append(f'<polygon class="road-poly" data-road-id="{rid}" data-road-name="{rdata.get("name","")}" points="{pts_str}" fill="#ddd" stroke="#999" stroke-width="0.8"><title>{title}</title></polygon>')
-        # also add centerline on top
+            svg_road_polygons.append('<polygon class="road-poly" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="#e9f2ff" stroke="#88a" stroke-width="0.8"><title>{title}</title></polygon>'.format(rid=rid, rname=rdata.get("name",""), pts=pts_str, title=title))
         pts_center = [transform(p) for p in poly]
         center_str = " ".join(f"{round(px,2)},{round(py,2)}" for px, py in pts_center)
-        svg_centerlines.append(f'<polyline class="road-line" data-road-id="{rid}" data-road-name="{rdata.get("name","")}" points="{center_str}" fill="none" stroke="#444" stroke-width="1"><title>center {rid}</title></polyline>')
-        # optional thin lighter overlay to indicate lane boundaries could be added later
+        svg_centerlines.append('<polyline class="road-line" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="none" stroke="#444" stroke-width="1"><title>center {rid}</title></polyline>'.format(rid=rid, rname=rdata.get("name",""), pts=center_str))
 
     svg_markers = []
     for jid, coord in junction_markers.items():
@@ -442,36 +456,102 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
         y = coord[1]
         name = coord[2] if len(coord) > 2 and coord[2] else f"J{jid}"
         tx, ty = transform((x, y))
-        svg_markers.append(f'<circle class="junction" data-junction-id="{jid}" data-junction-name="{name}" cx="{round(tx,2)}" cy="{round(ty,2)}" r="4" fill="#c22" stroke="#800" stroke-width="1"/>')
-        svg_markers.append(f'<text x="{round(tx+6,2)}" y="{round(ty+4,2)}" font-size="12" fill="#200">{name}</text>')
+        svg_markers.append(f'<circle class="junction" data-junction-id="{jid}" data-junction-name="{name}" cx="{round(tx,2)}" cy="{round(ty,2)}" r="5" fill="#d94d4d" stroke="#7a1f1f" stroke-width="1.2"/>')
+        svg_markers.append(f'<text class="jlabel" x="{round(tx+8,2)}" y="{round(ty+4,2)}" font-size="12" fill="#222">{name}</text>')
 
-    # assemble HTML
-    html = f"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<title>OpenDRIVE visualization</title>
-<style>
-  body {{ font-family: sans-serif; }}
-  svg {{ border: 1px solid #ccc; background: #fafafa; }}
-</style>
-</head>
-<body>
-<h3>OpenDRIVE visualization</h3>
-<p>Roads shown as filled polygons (approximated from lane widths). Junctions marked in red.</p>
-<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" version="1.1">
-  <g>
-    {"".join(svg_road_polygons)}
-    {"".join(svg_centerlines)}
-    {"".join(svg_markers)}
-  </g>
-</svg>
-</body>
-</html>
-"""
+    # small JS mapping for road->junctions
+    def _esc_js(s: str) -> str:
+        return (str(s).replace("\\", "\\\\").replace('"', '\\"'))
+    js_items = []
+    for rid, jlist in road_junctions.items():
+        items = ",".join(f'{{"id":"{_esc_js(j.get("id",""))}","name":"{_esc_js(j.get("name",""))}"}}' for j in jlist)
+        js_items.append(f'"{_esc_js(rid)}":[{items}]')
+    js_map = "{" + ",".join(js_items) + "}"
+
+    svg_polys = "".join(svg_road_polygons)
+    svg_centers = "".join(svg_centerlines)
+    svg_marks = "".join(svg_markers)
+
+    # Build final HTML using concatenation to avoid f-string/format pitfalls
+    html = (
+        "<!doctype html>\n"
+        "<html>\n"
+        "<head>\n"
+        "<meta charset=\"utf-8\"/>\n"
+        "<title>OpenDRIVE visualization</title>\n"
+        "<style>\n"
+        "  body { font-family: Inter, Arial, sans-serif; margin:16px; background:#f6f8fb; }\n"
+        "  .container { display:flex; gap:18px; align-items:flex-start; }\n"
+        "  .canvas { background: white; border-radius:8px; box-shadow:0 6px 18px rgba(20,30,50,0.08); padding:8px; }\n"
+        "  svg { display:block; }\n"
+        "  .toolbar { margin-bottom:8px; display:flex; gap:8px; }\n"
+        "  button.tool { padding:6px 10px; border-radius:6px; border:1px solid #d0d7e6; background:#fff; cursor:pointer; }\n"
+        "  .info { width:300px; padding:12px; border-radius:8px; background:#fff; box-shadow:0 6px 18px rgba(20,30,50,0.06); font-size:13px; }\n"
+        "  .info h4 { margin:0 0 8px 0; font-size:15px }\n"
+        "  .road-poly { transition: fill 160ms ease, stroke 160ms ease; }\n"
+        "  .road-poly:hover { fill:#d7eaff; stroke:#669; }\n"
+        "  .road-poly.selected { stroke:#222 !important; stroke-width:2 !important; fill:#fff3bf !important; }\n"
+        "  .road-line { pointer-events:none; }\n"
+        "  .junction { cursor:default }\n"
+        "  .jlabel { font-family: Arial, sans-serif; pointer-events:none }\n"
+        "</style>\n"
+        "</head>\n"
+        "<body>\n"
+        "<div class=\"container\">\n"
+        "  <div class=\"canvas\">\n"
+        "    <div class=\"toolbar\">\n"
+        "      <button class=\"tool\" id=\"zoom-in\">Zoom In</button>\n        <button class=\"tool\" id=\"zoom-out\">Zoom Out</button>\n        <button class=\"tool\" id=\"reset-view\">Reset</button>\n    </div>\n"
+        f"    <svg id=\"map-svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\" xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\">\n"
+        "      <g id=\"map-layer\">\n"
+        + svg_polys + svg_centers + svg_marks +
+        "      </g>\n"
+        "    </svg>\n"
+        "  </div>\n"
+        "  <div class=\"info\" id=\"info-panel\">\n"
+        "    <h4>Map Info</h4>\n"
+        "    <div id=\"info-content\">点击道路或转弯口查看信息。</div>\n"
+        "    <div style=\"margin-top:12px;color:#666;font-size:12px\">Generated by opendrive_parser.py</div>\n"
+        "  </div>\n"
+        "</div>\n"
+        "<script>\n"
+        "  // small, safe interactive helpers\n"
+        "  var roadJunctions = " + js_map + ";\n"
+        "  var svg = document.getElementById('map-svg');\n"
+        "  var mapLayer = document.getElementById('map-layer');\n"
+        "  var infoContent = document.getElementById('info-content');\n"
+        "  function clearSelection(){\n"
+        "    document.querySelectorAll('.road-poly.selected').forEach(function(el){ el.classList.remove('selected'); });\n"
+        "  }\n"
+        "  function showRoadInfo(id,name){\n"
+        "    var html = '<b>Road ID:</b> ' + id + '<br/>' + '<b>Name:</b> ' + (name||'<无名称>') + '<br/>';\n"
+        "    var juncs = roadJunctions[id] || [];\n"
+        "    if (juncs.length === 0) html += '<b>关联 junction:</b> 无'; else { html += '<b>关联 junction:</b><ul>'; for(var i=0;i<juncs.length;i++){ html += '<li>' + (juncs[i].name||('J'+juncs[i].id)) + ' (id=' + juncs[i].id + ')</li>'; } html += '</ul>'; }\n"
+        "    infoContent.innerHTML = html;\n"
+        "  }\n"
+        "  // attach click handlers\n"
+        "  mapLayer.querySelectorAll('.road-poly').forEach(function(el){\n"
+        "    el.style.cursor = 'pointer';\n"
+        "    el.addEventListener('click', function(evt){ evt.stopPropagation(); clearSelection(); el.classList.add('selected'); showRoadInfo(el.getAttribute('data-road-id'), el.getAttribute('data-road-name')); });\n"
+        "  });\n"
+        "  mapLayer.querySelectorAll('.junction').forEach(function(el){\n"
+        "    el.addEventListener('click', function(evt){ evt.stopPropagation(); var jid = el.getAttribute('data-junction-id'); var jn = el.getAttribute('data-junction-name'); infoContent.innerHTML = '<b>Junction ID:</b> ' + jid + '<br/><b>Name:</b> ' + (jn||'<无名称>'); });\n"
+        "  });\n"
+        "  // simple viewBox zoom helpers\n"
+        "  var vb = {x:0,y:0,w:" + str(width) + ",h:" + str(height) + "};\n"
+        "  function setViewBox(){ svg.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h); }\n"
+        "  document.getElementById('zoom-in').addEventListener('click', function(){ vb.w *= 0.8; vb.h *= 0.8; vb.x += vb.w*0.1; vb.y += vb.h*0.1; setViewBox(); });\n"
+        "  document.getElementById('zoom-out').addEventListener('click', function(){ vb.x -= vb.w*0.1; vb.y -= vb.h*0.1; vb.w /= 0.8; vb.h /= 0.8; setViewBox(); });\n"
+        "  document.getElementById('reset-view').addEventListener('click', function(){ vb = {x:0,y:0,w:" + str(width) + ",h:" + str(height) + "}; setViewBox(); });\n"
+        "  // click background clears\n"
+        "  svg.addEventListener('click', function(){ clearSelection(); infoContent.innerHTML = '点击道路或转弯口查看信息。'; });\n"
+        "</script>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+
     # write file
-    with open(out_path, "w", encoding="utf-8") as fh:
-        fh.write(html)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html)
 
 
 def main(argv=None):
@@ -481,6 +561,7 @@ def main(argv=None):
     parser.add_argument("--junctions", action="store_true", help="Count junctions (转弯口)")
     parser.add_argument("--list-junctions", action="store_true", help="List junctions with basic details")
     parser.add_argument("--visualize", nargs="?", const="visualization.html", help="Export simple HTML/SVG visualization (optional path)")
+    parser.add_argument("--resample-road", help="Force higher sampling density for a specific road id (debug/fix)")
     args = parser.parse_args(argv)
 
     try:
@@ -549,7 +630,7 @@ def main(argv=None):
     if args.visualize is not None:
         out_path = args.visualize or "visualization.html"
         try:
-            roads_geoms = extract_road_geometries(args.xodr)
+            roads_geoms = extract_road_geometries(args.xodr, getattr(args, "resample_road", None))
             root = _load_root(args.xodr)
             markers = _junction_marker_positions(root, roads_geoms)
             write_visualization_html(out_path, roads_geoms, markers)
