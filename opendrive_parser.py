@@ -261,9 +261,9 @@ def extract_road_geometries(xodr_path: str) -> Dict[str, Dict]:
     return roads_out
 
 
-def _junction_marker_positions(root: ET.Element, roads_geoms: Dict[str, Dict]) -> Dict[str, Tuple[float, float, str]]:
+def _junction_marker_positions(root: ET.Element, roads_geoms: Dict[str, Dict]) -> Dict[str, Tuple[float, float, str, str]]:
     """
-    For each junction element, pick a representative coordinate and name to mark it on the map.
+    For each junction element, pick a representative coordinate, name and incoming road id to mark it on the map.
 
     Strategy:
     - For each <junction>, look at its first <connection> child.
@@ -271,9 +271,9 @@ def _junction_marker_positions(root: ET.Element, roads_geoms: Dict[str, Dict]) -
         - if contactPoint == 'start' -> use the first point of that incoming road
         - if contactPoint == 'end'   -> use the last point of that incoming road
     - If road geometry isn't available, skip that junction.
-    Returns dict mapping junction id -> (x, y, name)
+    Returns dict mapping junction id -> (x, y, name, incomingRoad)
     """
-    markers: Dict[str, Tuple[float, float, str]] = {}
+    markers: Dict[str, Tuple[float, float, str, str]] = {}
     j_elems = _find_elements_by_tag(root, "junction")
     for j in j_elems:
         jid = j.attrib.get("id", "")
@@ -296,7 +296,7 @@ def _junction_marker_positions(root: ET.Element, roads_geoms: Dict[str, Dict]) -
                 x, y = poly[-1]
             else:
                 x, y = poly[0]
-            markers[jid] = (x, y, jname)
+            markers[jid] = (x, y, jname, incoming)
     return markers
 
 
@@ -394,6 +394,21 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
 
     svg_road_polygons = []
     svg_centerlines = []
+    # build mapping road_id -> list of junctions (from junction_markers if they include incoming road id)
+    road_junctions: Dict[str, List[Dict[str, str]]] = {}
+    for jid, coord in junction_markers.items():
+        if not coord:
+            continue
+        # coord may be (x,y,name) or (x,y,name,incoming)
+        incoming = None
+        jname = ""
+        if len(coord) >= 4:
+            incoming = coord[3]
+            jname = coord[2] if coord[2] else ""
+        elif len(coord) >= 3:
+            jname = coord[2] if coord[2] else ""
+        if incoming:
+            road_junctions.setdefault(incoming, []).append({"id": jid, "name": jname})
     # draw roads as filled polygons using left/right widths
     for rid, rdata in roads_geoms.items():
         poly = rdata.get("poly", [])
@@ -411,12 +426,12 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
             poly_screen = [transform(p) for p in left_pts] + [transform(p) for p in reversed(right_pts)]
             pts_str = " ".join(f"{round(px,2)},{round(py,2)}" for px, py in poly_screen)
             title = f"road {rid} {rdata.get('name','')}"
-            # lightly filled road with subtle stroke
-            svg_road_polygons.append(f'<polygon points="{pts_str}" fill="#ddd" stroke="#999" stroke-width="0.8"><title>{title}</title></polygon>')
+            # lightly filled road with subtle stroke; include data attributes for interactivity
+            svg_road_polygons.append(f'<polygon class="road-poly" data-road-id="{rid}" data-road-name="{rdata.get("name","")}" points="{pts_str}" fill="#ddd" stroke="#999" stroke-width="0.8"><title>{title}</title></polygon>')
         # also add centerline on top
         pts_center = [transform(p) for p in poly]
         center_str = " ".join(f"{round(px,2)},{round(py,2)}" for px, py in pts_center)
-        svg_centerlines.append(f'<polyline points="{center_str}" fill="none" stroke="#444" stroke-width="1"><title>center {rid}</title></polyline>')
+        svg_centerlines.append(f'<polyline class="road-line" data-road-id="{rid}" data-road-name="{rdata.get("name","")}" points="{center_str}" fill="none" stroke="#444" stroke-width="1"><title>center {rid}</title></polyline>')
         # optional thin lighter overlay to indicate lane boundaries could be added later
 
     svg_markers = []
@@ -427,7 +442,7 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
         y = coord[1]
         name = coord[2] if len(coord) > 2 and coord[2] else f"J{jid}"
         tx, ty = transform((x, y))
-        svg_markers.append(f'<circle cx="{round(tx,2)}" cy="{round(ty,2)}" r="4" fill="#c22" stroke="#800" stroke-width="1"/>')
+        svg_markers.append(f'<circle class="junction" data-junction-id="{jid}" data-junction-name="{name}" cx="{round(tx,2)}" cy="{round(ty,2)}" r="4" fill="#c22" stroke="#800" stroke-width="1"/>')
         svg_markers.append(f'<text x="{round(tx+6,2)}" y="{round(ty+4,2)}" font-size="12" fill="#200">{name}</text>')
 
     # assemble HTML
