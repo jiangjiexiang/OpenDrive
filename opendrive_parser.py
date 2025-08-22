@@ -643,6 +643,68 @@ def extract_objects_from_root(root: ET.Element) -> Dict[str, List[Dict[str, str]
                 outline = _get_child_by_tag(child, "outline")
                 has_outline = "yes" if outline is not None else "no"
                 other_attrs = {k: v for k, v in child.attrib.items() if k not in ("id", "name", "type", "objType", "subtype", "subType", "s", "t", "zOffset", "zoffset")}
+                # parse numeric dims if present and compute an estimated volume (m^3)
+                def _parse_num(val):
+                    try:
+                        return float(val) if val is not None and val != "" else None
+                    except Exception:
+                        return None
+
+                l_val = _parse_num(child.attrib.get("length", "") or "")
+                w_val = _parse_num(child.attrib.get("width", "") or "")
+                h_val = _parse_num(child.attrib.get("height", "") or "")
+
+                # compute area from outline (shoelace) if outline provided
+                def _outline_area(outline_elem):
+                    if outline_elem is None:
+                        return None
+                    pts = []
+                    for cc in list(outline_elem):
+                        tagc = _strip_ns(cc.tag)
+                        if tagc.startswith("corner"):
+                            try:
+                                x = float(cc.attrib.get("x", cc.attrib.get("X", "0")))
+                                y = float(cc.attrib.get("y", cc.attrib.get("Y", "0")))
+                                pts.append((x, y))
+                            except Exception:
+                                continue
+                    if len(pts) < 3:
+                        return None
+                    area = 0.0
+                    for i in range(len(pts)):
+                        x1, y1 = pts[i]
+                        x2, y2 = pts[(i + 1) % len(pts)]
+                        area += x1 * y2 - x2 * y1
+                    return abs(area) / 2.0
+
+                default_height = 1.0
+                volume = None
+                volume_source = "unknown"
+
+                if l_val is not None and w_val is not None and h_val is not None:
+                    volume = l_val * w_val * h_val
+                    volume_source = "length*width*height"
+                else:
+                    area = None
+                    if outline is not None:
+                        area = _outline_area(outline)
+                    if area is not None and area > 0:
+                        use_h = h_val if h_val is not None else default_height
+                        volume = area * use_h
+                        volume_source = "outline_area*height" if h_val is not None else "outline_area*default_height"
+                    elif l_val is not None and w_val is not None:
+                        use_h = h_val if h_val is not None else default_height
+                        volume = l_val * w_val * use_h
+                        volume_source = "length*width*height(defaulted)" if h_val is None else "length*width*height"
+                    elif (l_val is not None or w_val is not None) and h_val is not None:
+                        lp = l_val if l_val is not None else (w_val if w_val is not None else default_height)
+                        wp = w_val if w_val is not None else (l_val if l_val is not None else default_height)
+                        volume = lp * wp * h_val
+                        volume_source = "partial_dims*height"
+                    else:
+                        volume = 0.0
+                        volume_source = "insufficient_attributes"
+
                 obj = {
                     "id": oid,
                     "name": oname,
@@ -654,6 +716,11 @@ def extract_objects_from_root(root: ET.Element) -> Dict[str, List[Dict[str, str]
                     "zOffset": zoff,
                     "has_outline": has_outline,
                     "raw_attrs": str(other_attrs),
+                    "length": l_val if l_val is not None else "",
+                    "width": w_val if w_val is not None else "",
+                    "height": h_val if h_val is not None else "",
+                    "volume": round(float(volume), 6) if volume is not None else 0.0,
+                    "volume_source": volume_source,
                 }
                 _add_obj_to(rid, obj)
             except Exception:
@@ -690,6 +757,68 @@ def extract_objects_from_root(root: ET.Element) -> Dict[str, List[Dict[str, str]
             outline = _get_child_by_tag(elem, "outline")
             has_outline = "yes" if outline is not None else "no"
             other_attrs = {k: v for k, v in elem.attrib.items() if k not in ("id", "name", "type", "objType", "subtype", "subType", "s", "t", "zOffset", "zoffset")}
+            # parse numeric dims if present and compute an estimated volume (m^3)
+            def _parse_num(val):
+                try:
+                    return float(val) if val is not None and val != "" else None
+                except Exception:
+                    return None
+
+            l_val = _parse_num(elem.attrib.get("length", "") or "")
+            w_val = _parse_num(elem.attrib.get("width", "") or "")
+            h_val = _parse_num(elem.attrib.get("height", "") or "")
+
+            outline = _get_child_by_tag(elem, "outline")
+            def _outline_area(outline_elem):
+                if outline_elem is None:
+                    return None
+                pts = []
+                for cc in list(outline_elem):
+                    tagc = _strip_ns(cc.tag)
+                    if tagc.startswith("corner"):
+                        try:
+                            x = float(cc.attrib.get("x", cc.attrib.get("X", "0")))
+                            y = float(cc.attrib.get("y", cc.attrib.get("Y", "0")))
+                            pts.append((x, y))
+                        except Exception:
+                            continue
+                if len(pts) < 3:
+                    return None
+                area = 0.0
+                for i in range(len(pts)):
+                    x1, y1 = pts[i]
+                    x2, y2 = pts[(i + 1) % len(pts)]
+                    area += x1 * y2 - x2 * y1
+                return abs(area) / 2.0
+
+            default_height = 1.0
+            volume = None
+            volume_source = "unknown"
+
+            if l_val is not None and w_val is not None and h_val is not None:
+                volume = l_val * w_val * h_val
+                volume_source = "length*width*height"
+            else:
+                area = None
+                if outline is not None:
+                    area = _outline_area(outline)
+                if area is not None and area > 0:
+                    use_h = h_val if h_val is not None else default_height
+                    volume = area * use_h
+                    volume_source = "outline_area*height" if h_val is not None else "outline_area*default_height"
+                elif l_val is not None and w_val is not None:
+                    use_h = h_val if h_val is not None else default_height
+                    volume = l_val * w_val * use_h
+                    volume_source = "length*width*height(defaulted)" if h_val is None else "length*width*height"
+                elif (l_val is not None or w_val is not None) and h_val is not None:
+                    lp = l_val if l_val is not None else (w_val if w_val is not None else default_height)
+                    wp = w_val if w_val is not None else (l_val if l_val is not None else default_height)
+                    volume = lp * wp * h_val
+                    volume_source = "partial_dims*height"
+                else:
+                    volume = 0.0
+                    volume_source = "insufficient_attributes"
+
             obj = {
                 "id": oid,
                 "name": oname,
@@ -701,6 +830,11 @@ def extract_objects_from_root(root: ET.Element) -> Dict[str, List[Dict[str, str]
                 "zOffset": zoff,
                 "has_outline": has_outline,
                 "raw_attrs": str(other_attrs),
+                "length": l_val if l_val is not None else "",
+                "width": w_val if w_val is not None else "",
+                "height": h_val if h_val is not None else "",
+                "volume": round(float(volume), 6) if volume is not None else 0.0,
+                "volume_source": volume_source,
             }
             _add_obj_to(road_key, obj)
         except Exception:
@@ -979,30 +1113,42 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
 
                 # transform to screen coordinates
                 sx, sy = transform(pos)
-                # choose small marker size based on map scale
-                r_px = 4
-                title_txt = f"obj {oid} {oname}"
                 # serialize object metadata for frontend (JSON). normalize unknown numeric 'type' placeholders (e.g. -1)
+                vol = 0.0
                 try:
-                    # copy the object dict so we can normalize values for display without mutating original
                     obj_for_json = dict(o) if isinstance(o, dict) else {"value": str(o)}
-                    # if 'type' is a numeric placeholder like -1, convert to a readable label
+                    # normalize numeric-type placeholder
                     tval = obj_for_json.get("type", "")
                     try:
                         tnum = int(float(tval)) if tval != "" else None
                         if tnum is not None and tnum < 0:
                             obj_for_json["type"] = f"unspecified({tnum})"
                     except Exception:
-                        # leave non-numeric types as-is
                         pass
+                    try:
+                        vol = float(obj_for_json.get("volume", 0.0) or 0.0)
+                    except Exception:
+                        vol = 0.0
                     _obj_json = json.dumps(obj_for_json, ensure_ascii=False)
                 except Exception:
                     _obj_json = str(o)
-                # escape double-quotes for safe HTML attribute embedding (note: keep simple replacement to avoid breaking attributes)
+                    vol = 0.0
+                # escape double-quotes for safe HTML attribute embedding
                 _obj_attr = _obj_json.replace('"', '"')
                 elem_tag = o.get("elem_tag", "") if isinstance(o, dict) else ""
+                # choose marker size based on volume (cube-root scale) with caps for readability
+                r_px = 4
+                if vol and vol > 0:
+                    r_px = 3 + min(36, (vol ** (1.0/3.0)) * 0.9)
+                title_txt = oname if oname else (f"object {oid}" if oid else "object")
+                vol_src = ""
+                try:
+                    if isinstance(obj_for_json, dict):
+                        vol_src = obj_for_json.get("volume_source", "") or ""
+                except Exception:
+                    vol_src = ""
                 svg_objects.append('<g class="xodr-object-group" data-road-id="{road}" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-elem-tag="{etag}" data-raw="{raw}">'.format(road=road_id, oid=oid, oname=oname.replace('"', '"'), otype=otype, etag=elem_tag, raw=_obj_attr))
-                svg_objects.append(f'<circle class="xodr-object" cx="{round(sx,2)}" cy="{round(sy,2)}" r="{r_px}" fill="#2b9df4" stroke="#083a73" stroke-width="0.8" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-road-id="{road_id}" data-elem-tag="{elem_tag}" data-raw="{_obj_attr}"></circle>')
+                svg_objects.append(f'<circle class="xodr-object" cx="{round(sx,2)}" cy="{round(sy,2)}" r="{round(r_px,2)}" fill="#2b9df4" stroke="#083a73" stroke-width="0.8" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-road-id="{road_id}" data-elem-tag="{elem_tag}" data-raw="{_obj_attr}" data-volume="{vol if vol is not None else ""}" data-volume-source="{vol_src}"></circle>')
                 svg_objects.append(f'<title>{title_txt}</title></g>')
 
     # small JS mapping for road->junctions
@@ -1054,11 +1200,12 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
         "      </g>\n"
         "    </svg>\n"
         "  </div>\n"
-        "  <div class=\"info\" id=\"info-panel\">\n"
-        "    <h4>Map Info</h4>\n"
-        "    <div id=\"info-content\">点击道路或转弯口查看信息。</div>\n"
-        "    <div style=\"margin-top:12px;color:#666;font-size:12px\">Generated by opendrive_parser.py</div>\n"
-        "  </div>\n"
+  "  <div class=\"info\" id=\"info-panel\">\n"
+  "    <h4>Map Info</h4>\n"
+  "    <div id=\"info-content\">点击道路或转弯口查看信息。</div>\n"
+  "    <div style=\"margin-top:8px;color:#666;font-size:12px\">Radius = 3 + min(36, 0.9 * cube_root(volume[m^3])) — default height when missing: 1.0 m<br/>Volume source shown when available.</div>\n"
+  "    <div style=\"margin-top:12px;color:#666;font-size:12px\">Generated by opendrive_parser.py</div>\n"
+  "  </div>\n"
         "</div>\n"
         "<script>\n"
         "  // small, safe interactive helpers\n"
