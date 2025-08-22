@@ -851,6 +851,7 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
     - Renders the SVG server-side (svg_polys / svg_centers / svg_marks)
     - Injects a small JS helper to handle click highlighting and simple viewBox zoom
     - Avoids embedding any Python f-string style templates; uses string concatenation
+    - Enhancements: roads receive distinct colors (consistent per-id), objects of "line" type are rendered as lines
     """
     # collect all points
     all_x = []
@@ -940,6 +941,29 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
             right_pts.append((rx, ry))
         return left_pts, right_pts
 
+    # color palette (pairs of fill, stroke). We'll choose color deterministically by road id hash.
+    color_palette = [
+        ("#e8f7ff", "#2f7fc1"),
+        ("#fff7e6", "#e08b2f"),
+        ("#eafaf1", "#2fa86a"),
+        ("#fff0f0", "#d94d4d"),
+        ("#f3e8ff", "#7b4dff"),
+        ("#fff0d6", "#d97a00"),
+        ("#f7f7f7", "#6b6b6b"),
+    ]
+
+    def _color_for_road(rid: str):
+        if not rid:
+            idx = 0
+        else:
+            s = str(rid)
+            h = 0
+            for ch in s:
+                h = ((h << 5) - h) + ord(ch)
+                h &= 0xFFFFFFFF
+            idx = abs(h) % len(color_palette)
+        return color_palette[idx]
+
     # Prepare containers and a map of roads associated with junctions.
     svg_road_polygons = []
     svg_centerlines = []
@@ -981,6 +1005,12 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
             wl = wr = 2.5
         left_pts, right_pts = compute_offsets(poly, wl, wr)
 
+        # determine colors
+        fill, stroke = _color_for_road(rid)
+        stroke_width_poly = 0.8
+        if rid in road_junctions:
+            stroke_width_poly = 1.6
+
         # produce screen coordinates
         if left_pts and right_pts:
             poly_screen = [transform(p) for p in left_pts] + [transform(p) for p in reversed(right_pts)]
@@ -988,17 +1018,25 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
             title = f"road {rid} {rdata.get('name','')}"
             # decide target list based on whether this road is associated with a junction
             if rid in road_junctions:
-                # junction-associated roads get a highlighted fill and stronger stroke, drawn on top
-                junction_polys.append('<polygon class="road-poly junction-road" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="#fff0d6" stroke="#d97a00" stroke-width="1.6"><title>{title}</title></polygon>'.format(rid=rid, rname=rdata.get("name",""), pts=pts_str, title=title))
+                # junction-associated roads drawn on top with slightly different stroke
+                junction_polys.append('<polygon class="road-poly junction-road" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"><title>{title}</title></polygon>'.format(rid=rid, rname=rdata.get("name",""), pts=pts_str, title=title, fill=fill, stroke=stroke, sw=stroke_width_poly))
             else:
-                normal_polys.append('<polygon class="road-poly" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="#e9f2ff" stroke="#88a" stroke-width="0.8"><title>{title}</title></polygon>'.format(rid=rid, rname=rdata.get("name",""), pts=pts_str, title=title))
+                normal_polys.append('<polygon class="road-poly" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"><title>{title}</title></polygon>'.format(rid=rid, rname=rdata.get("name",""), pts=pts_str, title=title, fill=fill, stroke=stroke, sw=stroke_width_poly))
 
         pts_center = [transform(p) for p in poly]
         center_str = " ".join(f"{round(px,2)},{round(py,2)}" for px, py in pts_center)
+        # centerline stroke darker variant
+        center_stroke = "#333"
         if rid in road_junctions:
-            junction_centers.append('<polyline class="road-line junction-line" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="none" stroke="#8b3b00" stroke-width="2"><title>center {rid}</title></polyline>'.format(rid=rid, rname=rdata.get("name",""), pts=center_str))
+            center_stroke = "#8b3b00"
         else:
-            normal_centers.append('<polyline class="road-line" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="none" stroke="#444" stroke-width="1"><title>center {rid}</title></polyline>'.format(rid=rid, rname=rdata.get("name",""), pts=center_str))
+            # try to use stroke color darkened a bit
+            center_stroke = stroke if stroke else "#444"
+        center_sw = 1 if rid not in road_junctions else 2
+        if rid in road_junctions:
+            junction_centers.append('<polyline class="road-line junction-line" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="none" stroke="{stroke}" stroke-width="{sw}"><title>center {rid}</title></polyline>'.format(rid=rid, rname=rdata.get("name",""), pts=center_str, stroke=center_stroke, sw=center_sw))
+        else:
+            normal_centers.append('<polyline class="road-line" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="none" stroke="{stroke}" stroke-width="{sw}"><title>center {rid}</title></polyline>'.format(rid=rid, rname=rdata.get("name",""), pts=center_str, stroke=center_stroke, sw=center_sw))
 
     # Final render order: normal polygons/centers first, then junction polys/centers so they appear on top.
     svg_road_polygons = normal_polys + junction_polys
@@ -1061,6 +1099,9 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
                 oid = o.get("id", "")
                 oname = o.get("name", "") or ""
                 otype = o.get("type", "") or ""
+                elem_tag_raw = o.get("elem_tag", "") or ""
+                elem_tag = elem_tag_raw.lower() if isinstance(elem_tag_raw, str) else ""
+                subtype = o.get("subtype", "") or ""
                 s_str = o.get("s", "") or ""
                 t_str = o.get("t", "") or ""
                 try:
@@ -1090,6 +1131,7 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
                         pos = ((minx + maxx) / 2.0, (miny + maxy) / 2.0)
 
                 # apply lateral offset t (positive to left of road direction)
+                tangent = (1.0, 0.0)
                 if road_poly and len(road_poly) >= 2 and t_val != 0.0:
                     # find nearest segment to s_val for tangent estimation
                     cum = _poly_cumulative(road_poly)
@@ -1111,6 +1153,17 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
                         # left normal
                         nx, ny = -uy, ux
                         pos = (pos[0] + nx * t_val, pos[1] + ny * t_val)
+                        tangent = (ux, uy)
+                else:
+                    # attempt to get a tangent near the point using first segment if available
+                    if road_poly and len(road_poly) >= 2:
+                        ax, ay = road_poly[0]
+                        bx, by = road_poly[1]
+                        txv = bx - ax
+                        tyv = by - ay
+                        tlen = math.hypot(txv, tyv)
+                        if tlen > 1e-9:
+                            tangent = (txv / tlen, tyv / tlen)
 
                 # transform to screen coordinates
                 sx, sy = transform(pos)
@@ -1136,12 +1189,12 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
                     vol = 0.0
                 # escape double-quotes for safe HTML attribute embedding
                 _obj_attr = _obj_json.replace('"', '"')
-                elem_tag = o.get("elem_tag", "") if isinstance(o, dict) else ""
                 object_elem_tags.add(elem_tag)
                 # choose marker size based on volume (cube-root scale) with caps for readability
                 r_px = 4
                 if vol and vol > 0:
                     r_px = 3 + min(36, (vol ** (1.0/3.0)) * 0.9)
+
                 title_txt = oname if oname else (f"object {oid}" if oid else "object")
                 vol_src = ""
                 try:
@@ -1149,9 +1202,71 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
                         vol_src = obj_for_json.get("volume_source", "") or ""
                 except Exception:
                     vol_src = ""
-                svg_objects.append('<g class="xodr-object-group" data-road-id="{road}" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-elem-tag="{etag}" data-raw="{raw}">'.format(road=road_id, oid=oid, oname=oname.replace('"', '"'), otype=otype, etag=elem_tag, raw=_obj_attr))
-                svg_objects.append(f'<circle class="xodr-object" cx="{round(sx,2)}" cy="{round(sy,2)}" r="{round(r_px,2)}" fill="#2b9df4" stroke="#083a73" stroke-width="0.8" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-road-id="{road_id}" data-elem-tag="{elem_tag}" data-raw="{_obj_attr}" data-volume="{vol if vol is not None else ""}" data-volume-source="{vol_src}"></circle>')
-                svg_objects.append(f'<title>{title_txt}</title></g>')
+
+                # detect "line-like" objects: by elem_tag or type/subtype containing 'line'
+                is_line_like = False
+                if isinstance(elem_tag, str) and "line" in elem_tag:
+                    is_line_like = True
+                if isinstance(otype, str) and "line" in otype.lower():
+                    is_line_like = True
+                if isinstance(subtype, str) and "line" in subtype.lower():
+                    is_line_like = True
+
+                # We will render line-like objects as short oriented lines along the road tangent.
+                if is_line_like and road_poly and len(road_poly) >= 2:
+                    # determine a small map-length for the line (meters)
+                    map_len = 1.0  # 1 meter line by default
+                    try:
+                        # if object has explicit length attribute, prefer that (safe fallback)
+                        if isinstance(o.get("length", ""), (int, float)) and float(o.get("length", 0)) > 0:
+                            map_len = float(o.get("length"))
+                    except Exception:
+                        pass
+                    # line endpoints in map coords
+                    ux, uy = tangent
+                    half_vec = (ux * (map_len / 2.0), uy * (map_len / 2.0))
+                    p1_map = (pos[0] - half_vec[0], pos[1] - half_vec[1])
+                    p2_map = (pos[0] + half_vec[0], pos[1] + half_vec[1])
+                    p1_px = transform(p1_map)
+                    p2_px = transform(p2_map)
+                    # line style based on elem_tag / object type
+                    line_color = "#2b9df4"
+                    stroke_w = max(1.0, min(3.0, r_px / 2.0))
+                    try:
+                        if elem_tag:
+                            # try to pick a color variant for certain tags
+                            if "stop" in elem_tag:
+                                line_color = "#d94d4d"
+                            elif "cross" in elem_tag or "zebra" in elem_tag:
+                                line_color = "#222"
+                    except Exception:
+                        pass
+                    svg_objects.append(f'<g class="xodr-object-group" data-road-id="{road_id}" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-elem-tag="{elem_tag_raw}" data-raw="{_obj_attr}">')
+                    svg_objects.append(f'<line class="xodr-object-line" x1="{round(p1_px[0],2)}" y1="{round(p1_px[1],2)}" x2="{round(p2_px[0],2)}" y2="{round(p2_px[1],2)}" stroke="{line_color}" stroke-width="{stroke_w}" stroke-linecap="round" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-road-id="{road_id}" data-elem-tag="{elem_tag_raw}" data-raw="{_obj_attr}" />')
+                    svg_objects.append(f'<title>{title_txt}</title></g>')
+                else:
+                    # default rectangular marker for other objects
+                    # choose fill color by elem_tag (simple mapping)
+                    fill_col = "#2b9df4"
+                    stroke_col = "#083a73"
+                    try:
+                        if elem_tag:
+                            if "signal" in elem_tag:
+                                fill_col = "#ffd24d"; stroke_col = "#b06f00"
+                            elif "pole" in elem_tag or "controller" in elem_tag:
+                                fill_col = "#93c47d"; stroke_col = "#2e7d32"
+                            elif "station" in elem_tag:
+                                fill_col = "#f3e8ff"; stroke_col = "#7b4dff"
+                    except Exception:
+                        pass
+                    svg_objects.append('<g class="xodr-object-group" data-road-id="{road}" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-elem-tag="{etag}" data-raw="{raw}">'.format(road=road_id, oid=oid, oname=oname.replace('"', '"'), otype=otype, etag=elem_tag_raw, raw=_obj_attr))
+                    x_px = round(sx - r_px, 2)
+                    y_px = round(sy - r_px, 2)
+                    w_px = round(r_px * 2, 2)
+                    h_px = round(r_px * 2, 2)
+                    rx_px = round(max(0.0, r_px * 0.15), 2)
+                    svg_objects.append(f'<rect class="xodr-object" x="{x_px}" y="{y_px}" width="{w_px}" height="{h_px}" rx="{rx_px}" ry="{rx_px}" fill="{fill_col}" stroke="{stroke_col}" stroke-width="0.8" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-road-id="{road_id}" data-elem-tag="{elem_tag_raw}" data-raw="{_obj_attr}" data-volume="{vol if vol is not None else ""}" data-volume-source="{vol_src}"></rect>')
+                    svg_objects.append(f'<title>{title_txt}</title></g>')
 
     # small JS mapping for road->junctions
     def _esc_js(s: str) -> str:
@@ -1183,12 +1298,13 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
         "  .info { width:300px; padding:12px; border-radius:8px; background:#fff; box-shadow:0 6px 18px rgba(20,30,50,0.06); font-size:13px; }\n"
         "  .info h4 { margin:0 0 8px 0; font-size:15px }\n"
         "  .road-poly { transition: fill 160ms ease, stroke 160ms ease; }\n"
-        "  .road-poly:hover { fill:#d7eaff; stroke:#669; }\n"
+        "  .road-poly:hover { filter:brightness(1.05); }\n"
   "  .road-poly.selected { stroke:#222 !important; stroke-width:2 !important; fill:#fff3bf !important; }\n"
   "  .xodr-object.selected { stroke:#000 !important; stroke-width:1.6 !important; }\n"
   "  .road-line { pointer-events:none; }\n"
         "  .junction { cursor:default }\n"
         "  .jlabel { font-family: Arial, sans-serif; pointer-events:none }\n"
+        "  .xodr-object-line { cursor:pointer; }\n"
         "</style>\n"
         "</head>\n"
         "<body>\n"
@@ -1233,12 +1349,13 @@ f"    <svg id=\"map-svg\" width=\"100%\" height=\"auto\" viewBox=\"0 0 {width} {
         "    el.addEventListener('click', function(evt){ evt.stopPropagation(); var jid = el.getAttribute('data-junction-id'); var jn = el.getAttribute('data-junction-name'); infoContent.innerHTML = '<b>Junction ID:</b> ' + jid + '<br/><b>Name:</b> ' + (jn||'<无名称>'); });\n"
         "  });\n"
         "  // object click handlers\n"
-        "  mapLayer.querySelectorAll('.xodr-object').forEach(function(el){\n"
+        "  mapLayer.querySelectorAll('.xodr-object, .xodr-object-line').forEach(function(el){\n"
         "    el.style.cursor = 'pointer';\n"
         "    el.addEventListener('click', function(evt){\n"
         "      evt.stopPropagation();\n"
         "      // clear previous object selection\n"
         "      document.querySelectorAll('.xodr-object.selected').forEach(function(x){ x.classList.remove('selected'); });\n"
+        "      document.querySelectorAll('.xodr-object-line.selected').forEach(function(x){ x.classList.remove('selected'); });\n"
         "      el.classList.add('selected');\n"
         "      var parent = el.parentElement || el;\n"
         "      var raw = parent.getAttribute('data-raw') || el.getAttribute('data-raw') || '{}';\n"
@@ -1451,7 +1568,7 @@ f"    <svg id=\"map-svg\" width=\"100%\" height=\"auto\" viewBox=\"0 0 {width} {
 "      wrap.style.fontSize = '13px';\n"
 "      wrap.innerHTML = '<span style=\"color:#333;margin-right:6px;\">Objects:</span>';\n"
 "\n"
-"      var objs = Array.from(mapLayer.querySelectorAll('.xodr-object'));\n"
+"      var objs = Array.from(mapLayer.querySelectorAll('.xodr-object, .xodr-object-line'));\n"
 "      var types = {};\n"
 "      objs.forEach(function(el){\n"
 "        var t = el.getAttribute('data-obj-type') || el.getAttribute('data-elem-tag') || 'unknown';\n"
@@ -1610,8 +1727,9 @@ def main(argv=None):
             roads_geoms = extract_road_geometries(args.xodr, getattr(args, "resample_road", None))
             root = _load_root(args.xodr)
             objects_map = extract_objects_from_root(root)
-            # 不再计算或渲染 junction 标注（例如 junction117），也不对关联 junction 的道路使用不同颜色
-            write_visualization_html(out_path, roads_geoms, {}, objects_map)
+            # 现在计算 junction 标注并将其用于渲染
+            junctions = _junction_marker_positions(root, roads_geoms)
+            write_visualization_html(out_path, roads_geoms, junctions, objects_map)
             abs_path = os.path.abspath(out_path)
             print(f"已生成可视化文件: {abs_path}")
         except Exception as e:
