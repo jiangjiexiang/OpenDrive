@@ -18,6 +18,9 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
 
     Signature maintained from original script.
     """
+    # User request: disable junction rendering and any junction-based styling.
+    # We still accept the parameter for API compatibility, but ignore its contents.
+    junction_markers = {}
     # collect all points
     all_x = []
     all_y = []
