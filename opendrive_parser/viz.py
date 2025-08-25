@@ -389,13 +389,48 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
                             map_len = float(o.get("length"))
                     except Exception:
                         pass
-                    # line endpoints in map coords
+
+                    # Use screen-space vector math to avoid sign/flip issues introduced by the map->screen Y flip.
+                    # We'll compute a small pair of nearby map points along the tangent, transform them to screen,
+                    # derive the screen-space unit tangent, then construct the oriented line in screen pixels.
                     ux, uy = tangent
-                    half_vec = (ux * (map_len / 2.0), uy * (map_len / 2.0))
-                    p1_map = (pos[0] - half_vec[0], pos[1] - half_vec[1])
-                    p2_map = (pos[0] + half_vec[0], pos[1] + half_vec[1])
-                    p1_px = transform(p1_map)
-                    p2_px = transform(p2_map)
+                    # center point in screen space (sx,sy) already computed above via transform(pos)
+                    # compute two nearby map points (half-length along tangent), transform to screen
+                    eps = map_len / 2.0
+                    try:
+                        pa_px = transform((pos[0] - ux * eps, pos[1] - uy * eps))
+                        pb_px = transform((pos[0] + ux * eps, pos[1] + uy * eps))
+                    except Exception:
+                        # fallback: use center only
+                        pa_px = (sx - eps * scale, sy)
+                        pb_px = (sx + eps * scale, sy)
+
+                    tx_px = pb_px[0] - pa_px[0]
+                    ty_px = pb_px[1] - pa_px[1]
+                    tlen_px = math.hypot(tx_px, ty_px)
+                    if tlen_px > 1e-9:
+                        ux_px, uy_px = tx_px / tlen_px, ty_px / tlen_px
+                    else:
+                        ux_px, uy_px = 1.0, 0.0
+
+                    # half length in pixels for the final drawn line
+                    half_len_px = (map_len / 2.0) * scale
+
+                    # For regular line-like objects: draw along the tangent in screen space
+                    p1_px = (sx - ux_px * half_len_px, sy - uy_px * half_len_px)
+                    p2_px = (sx + ux_px * half_len_px, sy + uy_px * half_len_px)
+
+                    # For stop-like elements, draw perpendicular to the road centerline (across the road)
+                    try:
+                        if elem_tag and "stop" in elem_tag:
+                            # compute screen-space normal (rotate tangent by +90deg -> left normal)
+                            nx_px, ny_px = -uy_px, ux_px
+                            p1_px = (sx - nx_px * half_len_px, sy - ny_px * half_len_px)
+                            p2_px = (sx + nx_px * half_len_px, sy + ny_px * half_len_px)
+                    except Exception:
+                        # keep tangent-based p1_px/p2_px on error
+                        pass
+
                     # line style based on elem_tag / object type — 默认黑色（用户要求）
                     line_color = "#000000"
                     stroke_w = max(1.0, min(3.0, r_px / 2.0))
@@ -407,6 +442,7 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
                                 line_color = "#000000"
                     except Exception:
                         pass
+
                     svg_objects.append(f'<g class="xodr-object-group" data-road-id="{road_id}" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-elem-tag="{elem_tag_raw}" data-raw="{_obj_attr}">')
                     svg_objects.append(f'<line class="xodr-object-line" x1="{round(p1_px[0],2)}" y1="{round(p1_px[1],2)}" x2="{round(p2_px[0],2)}" y2="{round(p2_px[1],2)}" stroke="{line_color}" stroke-width="{stroke_w}" stroke-linecap="round" data-obj-id="{oid}" data-obj-name="{oname}" data-obj-type="{otype}" data-road-id="{road_id}" data-elem-tag="{elem_tag_raw}" data-raw="{_obj_attr}" />')
                     svg_objects.append(f'<title>{title_txt}</title></g>')
@@ -502,6 +538,19 @@ f"          <svg id=\"map-svg\" width=\"100%\" height=\"auto\" viewBox=\"0 0 {wi
 "    <aside class=\"info card\" id=\"info-panel\" aria-live=\"polite\">\n"
 "      <h4>Map Info</h4>\n"
 "      <div id=\"info-content\" class=\"section\">点击道路或转弯口查看信息。</div>\n"
+"      <div id=\"search-controls\" class=\"section\">\n"
+"        <div style=\"display:flex;flex-direction:column;gap:8px;\">\n"
+"          <div style=\"display:flex;gap:8px;align-items:center;\">\n"
+"            <input id=\"search-road-id\" placeholder=\"Road ID\" style=\"flex:1;padding:6px;border:1px solid #ddd;border-radius:6px;\" />\n"
+"            <button id=\"search-road-btn\" class=\"tool\" style=\"padding:6px 10px;\">查询道路</button>\n"
+"          </div>\n"
+"          <div style=\"display:flex;gap:8px;align-items:center;\">\n"
+"            <input id=\"search-obj-id\" placeholder=\"Object ID\" style=\"flex:1;padding:6px;border:1px solid #ddd;border-radius:6px;\" />\n"
+"            <button id=\"search-obj-btn\" class=\"tool\" style=\"padding:6px 10px;\">查询物体</button>\n"
+"          </div>\n"
+"          <div id=\"search-status\" style=\"color:#666;font-size:12px;\"></div>\n"
+"        </div>\n"
+"      </div>\n"
 "      <div id=\"object-filters-container\" class=\"section\">\n"
 "        <div id=\"object-filters-card\" class=\"card\" style=\"padding:8px; box-shadow: none;\">\n"
 "          <h5 style=\"margin:0 0 8px 0;font-size:14px\">Objects</h5>\n"
@@ -660,9 +709,47 @@ f"          <svg id=\"map-svg\" width=\"100%\" height=\"auto\" viewBox=\"0 0 {wi
         "      }\n"
         "      container.appendChild(wrap);\n"
         "    }\n"
-        "    window.addEventListener('load', function(){ setTimeout(initObjectFilters, 50); });\n"
+        "    window.addEventListener('load', function(){ setTimeout(initObjectFilters, 50); setTimeout(initSearchControls, 60); });\n"
         "    window.refreshObjectFilters = initObjectFilters;\n"
-        "  })();\n"
+"    // initialize search controls for Road ID / Object ID\n"
+"    function initSearchControls(){\n"
+"      var sr = document.getElementById('search-road-id');\n"
+"      var sb = document.getElementById('search-road-btn');\n"
+"      var so = document.getElementById('search-obj-id');\n"
+"      var sob = document.getElementById('search-obj-btn');\n"
+"      var st = document.getElementById('search-status');\n"
+"      if (!mapLayer) return;\n"
+"      if (sb){\n"
+"        sb.addEventListener('click', function(){\n"
+"          var id = (sr && sr.value) ? sr.value.trim() : '';\n"
+"          if (!id){ if (st) st.textContent = '请输入 road id'; return; }\n"
+"          var el = mapLayer.querySelector('.road-poly[data-road-id=\"' + id + '\"]');\n"
+"          var found = false;\n"
+"          if (el){\n"
+"            el.dispatchEvent(new MouseEvent('click', { bubbles: true }));\n"
+"            found = true;\n"
+"          } else {\n"
+"            var el2 = mapLayer.querySelector('.road-line[data-road-id=\"' + id + '\"]');\n"
+"            if (el2){ el2.dispatchEvent(new MouseEvent('click', { bubbles: true })); found = true; }\n"
+"          }\n"
+"          if (st) st.textContent = found ? ('已定位道路 id=' + id) : ('未找到道路 id=' + id);\n"
+"        });\n"
+"      }\n"
+"      if (sr){ sr.addEventListener('keydown', function(e){ if (e.key === 'Enter') { if (sb) sb.click(); } }); }\n"
+"      if (sob){\n"
+"        sob.addEventListener('click', function(){\n"
+"          var id = (so && so.value) ? so.value.trim() : '';\n"
+"          if (!id){ if (st) st.textContent = '请输入 object id'; return; }\n"
+"          var el = mapLayer.querySelector('.xodr-object[data-obj-id=\"' + id + '\"], .xodr-object-line[data-obj-id=\"' + id + '\"]');\n"
+"          var found = false;\n"
+"          if (el){ el.dispatchEvent(new MouseEvent('click', { bubbles: true })); found = true; }\n"
+"          if (st) st.textContent = found ? ('已定位对象 id=' + id) : ('未找到对象 id=' + id);\n"
+"        });\n"
+"      }\n"
+"      if (so){ so.addEventListener('keydown', function(e){ if (e.key === 'Enter') { if (sob) sob.click(); } }); }\n"
+"    }\n"
+"    window.initSearchControls = initSearchControls;\n"
+"  })();\n"
         "</script>\n"
         "</body>\n"
         "</html>\n"
