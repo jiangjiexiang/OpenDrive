@@ -293,6 +293,12 @@ def extract_road_geometries(xodr_path: str, force_high_res_road: Optional[str] =
             except Exception:
                 pass
         wl, wr = _compute_road_widths(r)
-        roads_out[rid] = {"name": rname, "poly": processed, "width_left": wl, "width_right": wr}
+        roads_out[rid] = {
+            "name": rname,
+            "poly": processed,
+            "width_left": wl,
+            "width_right": wr,
+            "length": r.attrib.get("length"),
+        }
 
     return roads_out

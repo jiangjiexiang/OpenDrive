@@ -186,10 +186,11 @@ def write_visualization_html(out_path: str, roads_geoms: Dict[str, Dict], juncti
             pts_str = " ".join(f"{round(px,2)},{round(py,2)}" for px, py in poly_screen)
             title = f"road {rid} {rdata.get('name','')}"
             # decide target list based on whether this road is associated with a junction
+            road_length = rdata.get("length", "N/A")
             if rid in road_junctions:
-                junction_polys.append('<polygon class="road-poly junction-road" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"><title>{title}</title></polygon>'.format(rid=rid, rname=rdata.get("name",""), pts=pts_str, title=title, fill=fill, stroke=stroke, sw=stroke_width_poly))
+                junction_polys.append('<polygon class="road-poly junction-road" data-road-id="{rid}" data-road-name="{rname}" data-road-length="{length}" points="{pts}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"><title>{title}</title></polygon>'.format(rid=rid, rname=rdata.get("name",""), length=road_length, pts=pts_str, title=title, fill=fill, stroke=stroke, sw=stroke_width_poly))
             else:
-                normal_polys.append('<polygon class="road-poly" data-road-id="{rid}" data-road-name="{rname}" points="{pts}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"><title>{title}</title></polygon>'.format(rid=rid, rname=rdata.get("name",""), pts=pts_str, title=title, fill=fill, stroke=stroke, sw=stroke_width_poly))
+                normal_polys.append('<polygon class="road-poly" data-road-id="{rid}" data-road-name="{rname}" data-road-length="{length}" points="{pts}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"><title>{title}</title></polygon>'.format(rid=rid, rname=rdata.get("name",""), length=road_length, pts=pts_str, title=title, fill=fill, stroke=stroke, sw=stroke_width_poly))
 
         pts_center = [transform(p) for p in poly]
         center_str = " ".join(f"{round(px,2)},{round(py,2)}" for px, py in pts_center)
@@ -571,8 +572,10 @@ f"          <svg id=\"map-svg\" width=\"100%\" height=\"auto\" viewBox=\"0 0 {wi
         "  function clearSelection(){\n"
         "    document.querySelectorAll('.road-poly.selected').forEach(function(el){ el.classList.remove('selected'); });\n"
         "  }\n"
-        "  function showRoadInfo(id,name){\n"
-        "    var html = '<b>Road ID:</b> ' + id + '<br/>' + '<b>Name:</b> ' + (name||'<无名称>') + '<br/>';\n"
+        "  function showRoadInfo(id, name, length){\n"
+        "    var length_val = parseFloat(length);\n"
+        "    var length_str = !isNaN(length_val) ? '<b>Length:</b> ' + length_val.toFixed(2) + 'm<br/>' : '';\n"
+        "    var html = '<b>Road ID:</b> ' + id + '<br/>' + '<b>Name:</b> ' + (name||'<无名称>') + '<br/>' + length_str;\n"
         "    var juncs = roadJunctions[id] || [];\n"
         "    if (juncs.length === 0) html += '<b>关联 junction:</b> 无'; else { html += '<b>关联 junction:</b><ul>'; for(var i=0;i<juncs.length;i++){ html += '<li>' + (juncs[i].name||('J'+juncs[i].id)) + ' (id=' + juncs[i].id + ')</li>'; } html += '</ul>'; }\n"
         "    infoContent.innerHTML = html;\n"
@@ -581,7 +584,7 @@ f"          <svg id=\"map-svg\" width=\"100%\" height=\"auto\" viewBox=\"0 0 {wi
         "  if (mapLayer) {\n"
         "    mapLayer.querySelectorAll('.road-poly').forEach(function(el){\n"
         "      el.style.cursor = 'pointer';\n"
-        "      el.addEventListener('click', function(evt){ evt.stopPropagation(); clearSelection(); el.classList.add('selected'); showRoadInfo(el.getAttribute('data-road-id'), el.getAttribute('data-road-name')); });\n"
+        "      el.addEventListener('click', function(evt){ evt.stopPropagation(); clearSelection(); el.classList.add('selected'); showRoadInfo(el.getAttribute('data-road-id'), el.getAttribute('data-road-name'), el.getAttribute('data-road-length')); });\n"
         "    });\n"
         "    mapLayer.querySelectorAll('.junction').forEach(function(el){\n"
         "      el.addEventListener('click', function(evt){ evt.stopPropagation(); var jid = el.getAttribute('data-junction-id'); var jn = el.getAttribute('data-junction-name'); infoContent.innerHTML = '<b>Junction ID:</b> ' + jid + '<br/><b>Name:</b> ' + (jn||'<无名称>'); });\n"
