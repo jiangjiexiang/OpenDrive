@@ -65,7 +65,3 @@
   - 将根目录的旧脚本备份并删除（避免混淆），或重命名为 `opendrive_parser_legacy.py`（需你确认）。
   - 创建示例脚本 `use_example.py` 展示如何以编程方式使用包 API。
   - 增加简单的单元测试（geometry / junctions / objects）。
-
-联系方式
-- 项目仓库：git remote 指向 `https://github.com/jiangjiexiang/OpenDrive.git`
-- 若需对 README 内容调整（更详细的 API 文档或示例），请告诉我需要补充的部分，我会立即更新。
